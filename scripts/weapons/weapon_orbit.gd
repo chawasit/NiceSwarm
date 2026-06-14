@@ -35,14 +35,14 @@ func _physics_process(delta: float) -> void:
 	var dmg := WeaponConfig.BASE.orbit.dmg * player.damage_mult * (1.0 + WeaponConfig.BASE.orbit.growth * (level - 1))
 	var orbit_r := ORBIT_R * player.area_mult
 	var blade_r := BLADE_R * player.area_mult
-	for e in get_tree().get_nodes_in_group("enemies"):
+	for e in Main.instance.enemies_in_radius(global_position, orbit_r + blade_r + 64.0):
 		if hit_cd.has(e.get_instance_id()):
 			continue
 		for i in n:
 			var blade_pos: Vector2 = global_position \
 				+ Vector2.from_angle(angle + TAU * float(i) / n) * orbit_r
 			if blade_pos.distance_to(e.global_position) <= blade_r + e.radius:
-				e.take_hit(dmg, blade_pos)
+				e.take_hit(dmg, blade_pos, Enemy.DMG_PHYS, player.peer_id)
 				ignite(e, dmg)
 				hit_cd[e.get_instance_id()] = HIT_COOLDOWN * player.rate_mult
 				Sfx.play("orbit", blade_pos)

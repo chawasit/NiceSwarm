@@ -29,7 +29,7 @@ func _physics_process(delta: float) -> void:
 	while current != null and chains > 0:
 		visited[current.get_instance_id()] = true
 		points.append(current.global_position)
-		current.take_hit(dmg - dmgDrop, null, Enemy.DMG_ENERGY)
+		current.take_hit(dmg - dmgDrop, null, Enemy.DMG_ENERGY, player.peer_id)
 		ignite(current, dmg - dmgDrop)
 		chains -= 1
 		dmgDrop += 1
@@ -45,7 +45,7 @@ func _next_target(from: Vector2, visited: Dictionary) -> Node2D:
 	var best: Node2D = null
 	var jump := 200.0 * player.area_mult
 	var best_d := jump * jump
-	for e in get_tree().get_nodes_in_group("enemies"):
+	for e in Main.instance.all_enemies():
 		if visited.has(e.get_instance_id()):
 			continue
 		var d: float = from.distance_squared_to(e.global_position)

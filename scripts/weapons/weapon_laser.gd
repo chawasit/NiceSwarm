@@ -32,7 +32,7 @@ func _physics_process(delta: float) -> void:
 	var beams := level
 	var length := (240.0 + 30.0 * (level - 1)) * player.area_mult
 	var dmg := WeaponConfig.BASE.laser.dmg * player.damage_mult * (1.0 + WeaponConfig.BASE.laser.growth * (level - 1))
-	for e in get_tree().get_nodes_in_group("enemies"):
+	for e in Main.instance.all_enemies():
 		if hit_cd.has(e.get_instance_id()):
 			continue
 		var rel: Vector2 = e.global_position - global_position
@@ -40,7 +40,7 @@ func _physics_process(delta: float) -> void:
 			var dir := Vector2.from_angle(angle + PI * b)
 			var along := clampf(rel.dot(dir), 0.0, length)
 			if (dir * along).distance_to(rel) <= 6.0 + e.radius:
-				e.take_hit(dmg, global_position + dir * along, Enemy.DMG_ENERGY)
+				e.take_hit(dmg, global_position + dir * along, Enemy.DMG_ENERGY, player.peer_id)
 				ignite(e, dmg)
 				hit_cd[e.get_instance_id()] = HIT_COOLDOWN * player.rate_mult
 				Sfx.play("laser", e.global_position)

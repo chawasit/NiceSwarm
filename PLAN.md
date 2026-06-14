@@ -30,10 +30,10 @@ Collect XP, level up, pick 1 of 3 upgrades, and survive **10 minutes** to win.
   - *Wisp*: Mote → Wisp — fast, **immune to ENERGY** damage (counters energy builds)
   - *Disruptor*: Hexer → Nullifier — telegraphs zones that don't hurt but **slow + dash-lock** you
   - *Elite* (always drops a chest): Elite → Champion
-  - Add a class or tier in `ENEMY_CLASSES`; network ids are assigned automatically.
+  - Add a class or tier in `EnemyConfig.CLASSES`; network ids are assigned automatically.
 - **Damage types** (PHYS/FIRE/ICE/ENERGY): weapons tag hits; immune enemies take zero of their type.
-- **Dynamic difficulty from clear rate:** `_heat()` = how fast you clear vs spawn pressure — clear
-  fast and the game escalates faster (more elites, higher tiers, +HP/speed). Synced to clients.
+- **Dynamic difficulty from clear rate:** `EnemySpawner.heat()` = how fast you clear vs spawn pressure
+  — clear fast and the game escalates faster (more elites, higher tiers, +HP/speed). Synced to clients.
 - **Player:** 5 HP, brief invulnerability after a hit, starts with the Bolt weapon
 - **Upgrade picks are categorized:** `[NEW]` learn a weapon · `[Lv n]` level an owned one ·
   `[MERGE]` fuse two maxed weapons · `[STAT]` passive boost
@@ -43,11 +43,10 @@ Collect XP, level up, pick 1 of 3 upgrades, and survive **10 minutes** to win.
   Duration (+25% lifetime; instant weapons gain a lingering **burn** via `ignite()` whose length
   scales with Duration). Enemy now supports `apply_burn` alongside `apply_slow`. Plus Swift Boots /
   Vitality / Magnet / Slipstream (player stats). Weapons read the multipliers live, so fused parts scale too.
-- **Fusions are distinct new weapons** (not the two running together) — **13 signature recipes**:
-  Plasma Burst, Cryoshock, Toxic Pyre, Singularity, Cluster Bomb, Prism Halo, Glacial Edge,
-  Railgun, Supernova, Frost Halo, Glacier, Storm Disc, Napalm Mine. Recipes in `weapon_fusions.gd`;
-  uncovered pairs fall back to a generic combined fusion. Full list in [WEAPON_DESIGN.md](WEAPON_DESIGN.md).
-- **Dynamic difficulty:** a `_heat()` value rises as the party level outpaces par-for-time. When
+- **Fusions are distinct new weapons** (not the two running together) — **78 signature recipes
+  (every weapon-pair combination)**. Recipes in `weapon_fusions.gd`; full list and coverage
+  matrix in [WEAPON_DESIGN.md](WEAPON_DESIGN.md).
+- **Dynamic difficulty:** a `heat()` value rises as the party level outpaces par-for-time. When
   ahead, elites and bombardiers spawn more often, normal spawns can upgrade to special enemies, and
   all enemies get a mild HP/speed bonus. A HUD "Threat ▮▮▮▮" meter shows the current pressure.
 - **Weapon level cap is 3** (was 5) so fusion is reached fast; per-level damage growth ~doubled to
@@ -88,7 +87,8 @@ Collect XP, level up, pick 1 of 3 upgrades, and survive **10 minutes** to win.
   Downed at 0 HP → ally stands close 3 s to revive at half HP; run ends when all are down.
   Elite chests give *every* player a free pick. Enemies scale with party size and target the
   nearest living player. Ally HP/downed on HUD + off-screen ally arrows + name tags/colors.
-- **Win:** survive 10:00 · **Lose:** whole party downed · stats + restart (host)
+- **Win:** survive 10:00 · **Lose:** whole party downed · **end-game scoreboard** (per player:
+  damage / XP / revives / deaths, ranked by damage) + restart (host)
 
 ## Milestones
 
@@ -140,6 +140,52 @@ godot --headless --path \path\to\folder --quit-after 300   # smoke test (should 
 
 ## Session log
 
+### 2026-06-15 — Session 3: balance overhaul + docs + unit tests (branch `balance/curve-waves`)
+- Rebased the balance branch onto the post-`sync-from-master` `publish`, re-grounding the
+  plan against the refactored code (spawning now in `scripts/core/spawner.gd`; two-track
+  `pace`/`difficulty` + heat/heat-spike/bosses/bouncers already exist). Revised
+  [docs/balance/BALANCE_PLAN.md](docs/balance/BALANCE_PLAN.md) accordingly (waves → spawner,
+  walls dropped in favor of the boss system, FF reuses `player.debug_god`).
+- **Docs:** wrote [GAME_DESIGN.md](GAME_DESIGN.md) (holistic design, incl. the new difficulty
+  model) + [README.md](README.md).
+- **Implemented the 4-system overhaul:**
+  1. *Gem cap* — 500-gem ceiling; excess XP condenses into the farthest gem, rendered as a
+     growing red orb (perf). Client value-sync updated each tick.
+  2. *`NICESWARM_FF=<mult>`* fast-forward hook — scales `Engine.time_scale` +
+     `max_physics_steps_per_frame`, immortal players (`debug_god`), auto-picks level-ups,
+     prints level/gems per game-minute. Fixed a pre-existing bomb-pickup freed-instance crash
+     it surfaced.
+  3. *Three-band XP curve* — `GameConfig.xp_for_level` (pure/static/tested); fast early →
+     earned late.
+  4. *Time-based waves* — per-minute intensity/pop in `spawner.run_spawning`, layered over the
+     existing engine; bosses remain the DPS-checkpoints.
+- **Unit tests:** new zero-dependency headless harness `tests/run_tests.gd` + 7 modules,
+  **925 assertions** (config, weapons, enemies, all 78 fusions, spawner math, XP curve, waves,
+  gems). Run: `godot --headless --path . --script res://tests/run_tests.gd`.
+- **Calibrated via FF:** shipped curve+waves land the 10-min win at ~L45–48 (target 40–50).
+  Verified: 925 unit tests + solo/zoo/all_weapons/merge/bomber + co-op host/join all clean.
+- **Next:** real playtest of the new curve/waves/gem-cap; tune wave feel; the XP/wave numbers
+  are calibrated to the *aggressive* FF case, so real play lands a bit lower.
+
+### 2026-06-14 — Session 2: late-game O(n²) perf fix (branch `perf/game-loop-on2`)
+- User reported late-game crash to <1 fps + attacks "passing through" enemies. Investigated
+  and wrote [PERFORMANCE.md](PERFORMANCE.md): **two independent O(n²) costs**, and the
+  missed-hits are a *symptom* of the frame collapse (Godot time-dilation past
+  `max_physics_steps_per_frame`), not tunneling (bolt 520 px/s = 8.7 px/step < 17 px radius).
+- **Cost A (engine):** 220 enemies (`CharacterBody2D`) all had `collision_mask = 2` → mutual
+  `move_and_slide()` contact solving. Set enemy `collision_mask = 0` (overlap freely, VS-style).
+- **Cost B (script):** ~70 `get_tree().get_nodes_in_group("enemies")` calls/tick, each
+  allocating a fresh ≤220 array. Added `Main`'s shared per-tick enemy index (`class_name Main`
+  + `static instance`, built once in `_physics_process` before children): `all_enemies()`,
+  `enemies_in_radius()` (uniform 128px grid, O(local)), `nearest_enemy_to()`. Routed
+  `player.nearest_enemy` + orbit + gravity_well through the grid; swapped the rest to the
+  shared cached list. Helpers return `Array[Node]` to preserve call-site inference.
+- Verified headless (a same-version Godot binary; user's `godot` wasn't on the automation
+  PATH): import clean + solo/all_weapons/zoo/merge/bomber/co-op all error-free.
+- **Next:** measure the real fps gain in a playtest (the doc's bisect); optionally do the
+  follow-ups (throttle continuous scanners, migrate nova/laser/flame/spawned to the radius
+  query, `queue_redraw` cleanup). Pushed to fork for a PR to the original repo.
+
 ### 2026-06-13 — Session 1
 - Chose concept (action roguelike) + stack (Godot 4) with user; installed Godot 4.6.3 via Scoop.
 - Built entire first playable (M0–M5): all scripts under `scripts/`, one minimal `scenes/main.tscn`.
@@ -168,6 +214,19 @@ godot --headless --path \path\to\folder --quit-after 300   # smoke test (should 
 - Smoke-test hook: env `NICESWARM_TEST=all_weapons` grants every weapon at start; 900-frame
   headless run with all 13 active is clean.
 - **Untested in real play:** all 10 new weapons' feel and balance; expect damage outliers (M7).
+
+### 2026-06-13 — Session 1 (continued): end-game scoreboard
+- Per-player stats (host): `_score[pid] = {damage, xp, revives, deaths}`. Accrual — **deaths** in
+  `_on_player_downed`; **revives** credit the adjacent helper in `_run_revives`; **xp** to the
+  nearest player at gem-collect; **damage** via a new `source_pid` param on `enemy.take_hit` (credits
+  `min(amount, hp)` so overkill doesn't inflate). Threaded `source_pid` through every spawned node
+  (projectile/missile/mine/well/venom/frost/glaive/turret, incl. turret's sub-spawns) and every
+  direct `take_hit` in the 13 weapons + 43 fusions (weapons pass `player.peer_id`, nodes carry it).
+- End screen shows a ranked scoreboard (`scoreboard_box`, colored per player). Synced via the end
+  RPC: `send_end(...scores: PackedFloat32Array)` packs `[color_idx, dmg, xp, rev, deaths]×N`.
+- Test: `NICESWARM_TEST=score` (force-ends at 4 s, prints rows). Fixed a stray invalid `level // 2`
+  (no Python int-div in GDScript) in weapon_turret while here.
+- Verified headless: score, all_weapons, all_fusions (43), zoo (27), host+client — clean.
 
 ### 2026-06-13 — Session 1 (continued): script restructure + config files
 - **Restructure:** moved 35 scripts into folders — `core/` (net/player/sfx), `weapons/`,
@@ -494,3 +553,177 @@ godot --headless --path \path\to\folder --quit-after 300   # smoke test (should 
   thousands of "previously freed instance" errors (typed assignment raises *before* any
   `is_instance_valid` check can run). Now erased at collection; all sync-dict reads untyped
   with validity checks first. Re-verified: solo + host/client pair logs clean.
+
+### 2026-06-14 — Session 2: fusion coverage matrix complete (78/78)
+- Filled in every remaining cell of the fusion coverage matrix in `WEAPON_DESIGN.md`,
+  bringing signature fusions from 43 → 78 (all pairs). New recipes live in
+  `scripts/weapons/weapon_fusions.gd`.
+- Gravity row (GRV): Cinder Vortex (flame), Accretion Beam (laser, rotating energy
+  spokes added to `GravityWell`), Storm Vortex (lightning, chain-arc field added to
+  `GravityWell`), Implosion Mine (mines), Implosion Salvo (missiles) — each spawns/hosts
+  the paired weapon's effect inside the vortex's own radius.
+- Mines row (MIN): Shrapnel Mine (glaive), Beam Mine (laser), Tesla Mine (lightning),
+  Nova Mine (nova), Toxic Mine (venom) — share a new `_MineFusion` base class; the
+  mine's own blast uses normal `(level-1)` growth, the bonus payload it spawns on
+  detonation uses `(level)` growth (one level stronger than the mine). New optional
+  fields added to `MineNode` (`shrapnel_*`, `beam_*`, `chain_*`, `nova_*`, `venom_*`).
+- Final 14 pairs (flame/glaive/laser/missiles/orbit/venom/lightning cross-combinations):
+  Inferno Blade, Solar Lance, Phoenix Rocket, Blaze Halo, Photon Disc, Rotor Missile,
+  Blade Tempest, Plague Blade, Ion Storm, Beam Battery, Acid Ray, EMP Missile, Rocket
+  Halo, Plague Rocket. `MissileProj` gained optional `fire_*`/`venom_*`/`shrapnel_*`/
+  `chain_*` payload fields (mirrors `MineNode`'s pattern) for the rocket-based ones.
+- `main.gd`'s `NICESWARM_TEST=all_fusions` regression list extended to all 78 pairs.
+- Verified headless: `all_fusions` (300 & 1800 frames) and `all_weapons` (600 frames)
+  all clean, zero errors.
+- **Next session:** real playtest of the new fusions for balance/feel, then M7 balance pass.
+
+### 2026-06-14 — Session 2 (continued): burn stacking rework, gravity tone-down, EnemySpawner extraction
+- **Burn rework (user correction):** reverted the 5-stack burn array to a single
+  `burn_dps`/`burn_timer` pair (`enemy.gd`). `apply_burn` now stacks additively on
+  re-ignite — both `burn_dps` and `burn_timer` add onto the active burn instead of a
+  capped array of independent burns. `WeaponBase.ignite()` base duration back to
+  `1.2 * player.duration_mult`.
+- **Gravity well tone-down:** base well `damage` now lands exactly **once per enemy per
+  well lifetime** via a new `_hit_enemies` tracking dict in `gravity_well.gd`. Fusion
+  "pair" damage fields (`beam_dmg` for Accretion Beam, `chain_dmg` for Storm Vortex)
+  still tick every 0.35s as before; one-shot/separate-node fusion effects (Singularity
+  detonate, Cinder Vortex puddle, Implosion Mine/Salvo) untouched.
+- **EnemySpawner extraction:** pulled all enemy-spawn pacing + dynamic-difficulty/heat
+  state out of `main.gd` into a new `scripts/core/spawner.gd` (`class_name EnemySpawner`,
+  child of Main like `Net`, `spawner.main = self`). Owns the type registry
+  (`build_type_registry`/`types`/`type_id`), difficulty/heat (`difficulty`,
+  `net_difficulty`, `heat_cur`, `net_heat`, `heat()`, `diff()`, `warmup()`,
+  `update_difficulty`, `add_kill`, `add_level_difficulty`), and spawning
+  (`run_spawning`, `class_tier`, `make_enemy`, `make_enemy_by_type`, `spawn_enemy`,
+  `spawn_burst`). Spawn weights/timings are now data-driven: `EnemyConfig.SPAWN_POOL`
+  (weighted, time-gated regular spawns) and `EnemyConfig.SPAWN_SPECIALS` (periodic
+  tank/elite/caster spawns with heat-lerped intervals) — tuning what spawns when is now
+  a table edit. `enemy.gd`'s Bomber/Disruptor chaos calc reads `main_ref.spawner.difficulty`.
+- Gotcha: fields computed from `main.<dict>.size()`/`main.peer_ids.size()` (where `main`
+  is typed `Node`) need an explicit type annotation (`var x: float = ...`/`var x: bool =
+  ...`) — `:=` can't infer through a `Variant`-typed property access.
+- Verified headless: import (new `class_name EnemySpawner` resolves), plain 300-frame
+  run, `zoo`/`bomber` (300), `all_weapons` (900), `all_fusions` (1800), host+join pair —
+  all clean, zero errors.
+- **Next session:** real playtest of the new burn-stacking feel, gravity tone-down, and
+  use the new `SPAWN_POOL`/`SPAWN_SPECIALS` tables for more granular spawn tuning; M7.
+
+### 2026-06-14 — Session 2 (continued): split pace vs. difficulty
+- User: separate the single `difficulty` number into two — one controls enemy
+  *variety* + *desired population* and must progress with time only (never
+  accelerate); the other controls how hard enemies are to *clear* and should
+  accelerate when the player is doing well.
+- `EnemySpawner` now tracks both, growing from the same base rate (`DIFF_BASE *
+  warmup()`) each tick:
+  - **`pace`** (new, host-only) — flat time-based climb, no heat/level
+    multiplier. `class_tier` (variety ceiling) and `desired_pop` (spawn-refill
+    target) now read `pace` instead of `difficulty`.
+  - **`difficulty`** (unchanged name/sync) — same base rate but multiplied by
+    `(1 + heat*DIFF_HEAT + (level-1)*DIFF_LEVEL)`, plus the level-up step
+    (`add_level_difficulty`). Still drives `make_enemy`'s hp/speed/dmg scaling
+    and the HUD difficulty bar; still synced to clients via `net_difficulty`.
+  - Net effect: `difficulty >= pace` always; the gap is exactly the
+    "ahead-of-par" bonus that makes monsters tougher without also escalating
+    variety/population.
+- Updated `ENEMY_DESIGN.md`'s difficulty/heat section (also fixed stale
+  `_class_tier`/`_make_enemy`/`ENEMY_CLASSES`-style references left over from
+  the EnemySpawner extraction).
+- Verified headless: import, 300/900/1800-frame weapon/fusion runs, zoo, bomber,
+  and a 4000-frame solo run (covers most of a 9-min run) — all clean.
+- **Next session:** playtest whether pace's variety/population schedule still
+  feels right now that it's decoupled from heat; M7.
+
+### 2026-06-14 — Session 2 (continued): heat exponential spike + boss class
+- User: when the player nearly clears the map (mid-game+), heat should spike
+  exponentially; add a hard "boss" enemy class spawned after X kills, with
+  multiple variations, each hard to kill via a mechanic (not just hp), with
+  map-wide/pattern attacks.
+- **Heat spike** (`EnemySpawner.heat_spike`, host-only): once `elapsed >=
+  MID_GAME_TIME` (5:00), if live enemy count < `HEAT_SPIKE_POP_FRAC` (20%) of
+  `desired_pop`, `heat_spike` compounds exponentially
+  (`(heat_spike+dt)*(1+HEAT_SPIKE_GROWTH*dt)`, capped `HEAT_SPIKE_MAX=5`) and
+  feeds an extra `+ heat_spike * DIFF_SPIKE` term into the `difficulty` climb;
+  decays linearly (`HEAT_SPIKE_DECAY`) once the population recovers. New
+  consts in `GameConfig`.
+- **Boss class** (`EnemyConfig.CLASSES.boss`, 3 tiers): `EnemySpawner.add_kill`
+  tracks `total_kills`; at `BOSS_KILL_BASE` (60) and then every
+  `BOSS_KILL_INTERVAL` (90) kills, `spawn_boss()` spawns one, tier = boss count
+  so far (capped). Each tier is hard to kill via a distinct mechanic, not just
+  hp: Juggernaut (`shield_cycle`/`shield_time` + `cc_imm`), Harbinger
+  (`immune_cycle`/`immune_pool` rotates elemental immunity), Eclipse
+  (`enrage_resist` ramps armor as hp drops + `summon_cls`/`summon_count`/
+  `summon_cooldown` calls in adds). All `elite`+`pull_imm`, drawn with an extra
+  crimson ring.
+- New `Enemy.slam_pattern`/`slam_radius`/`slam_damage`/`slam_cooldown` —
+  independent of `caster`, so bosses chase normally while periodically firing
+  a map-wide/pattern attack via `cast_telegraph` in `_do_slam()`: pattern 3
+  (checkerboard grid centered on self) and pattern 4 (rotating sweep radiating
+  from the target, advancing 60°/cast).
+- Updated `ENEMY_DESIGN.md` with a new "Bosses" section + heat-spike
+  description + tier-field table additions.
+- Verified headless: import, plain 300-frame run, zoo (300 and 1800, spawns
+  all 3 boss tiers via `spawner.types`), bomber, host+join pair — all clean.
+- **Next session:** playtest boss encounters live (kill-count pacing, slam
+  telegraph fairness/readability, heat-spike feel near map-clears); M7.
+
+### 2026-06-14 — Session 2 (continued): caster uniform tier + bouncer special population
+- User: caster-type enemies should always pick their spawn tier uniformly
+  (not skewed toward the ceiling); make bouncer a special population — once
+  unlocked it's excluded from the normal pool and gets its own cap that keeps
+  growing with game progress.
+- `EnemySpawner.class_tier`: classes whose tier-0 dict sets `uniform_tier:
+  true` now pick `randi() % (ceiling + 1)` — every unlocked tier equally
+  likely — instead of the geometric step-down that heavily favors the
+  ceiling. Marked `"caster"` (Bomber/Diviner/Oracle) in `EnemyConfig.CLASSES`.
+- Bouncer removed from `EnemyConfig.SPAWN_POOL` entirely. New
+  `EnemySpawner.bouncer_live`/`bouncer_accum`: once `elapsed >=
+  BOUNCER_UNLOCK` (2:45), `run_spawning` tops bouncers up to
+  `BOUNCER_CAP_BASE + pace * BOUNCER_CAP_PER_PACE` (grows with pace, never
+  shrinks/accelerates) every `BOUNCER_SPAWN_INTERVAL` (2s).
+  `spawn_enemy`/`_on_enemy_killed` track `bouncer_live`; new
+  `_pool_count() = enemies_by_id.size() - bouncer_live` is used everywhere
+  `desired_pop`/`overwhelmed`/heat-spike previously read the raw live count,
+  so the bouncer population never crowds out or distorts the normal pool's
+  pacing. New `GameConfig.BOUNCER_*` consts.
+- Updated `ENEMY_DESIGN.md`: spawn-cadence section notes `uniform_tier` and the
+  bouncer exclusion; new "Bouncer: a separate population" section.
+- Verified headless: import, plain 300-frame run, zoo, bomber, a 10000-frame
+  solo run (crosses BOUNCER_UNLOCK and the first boss kill-threshold), and a
+  host+join pair — all clean.
+
+### 2026-06-14 — Session 3: sync master with publish, merge origin/publish perf work
+- User: squash the full dev history (`master`, 33 commits) onto a branch off
+  `publish`, since `master` and `origin/publish` had completely diverged (no
+  common ancestor). Chose "master's tree only, parent = publish HEAD": new
+  branch `sync-from-master` off `publish` (b68e835), single commit `2a114ea`
+  whose tree is identical to master's.
+- User: then merge `origin/publish` (a8c649c — perf/CI work unique to that
+  branch: shared `EnemyGrid` spatial index in `main.gd`/`Main.instance`,
+  "safe spawn radius" + newborn-enemy ease-in, no enemy-enemy collision,
+  `SPAWN_RING_MIN/MAX`/`SPAWN_SAFE_RADIUS` consts, GH Actions build workflow,
+  PERFORMANCE.md) into `sync-from-master`. Resolved 19 conflicts across 10
+  files, consistently preferring master's existing equivalents where one
+  existed (master's own `EnemyGrid` spatial index in `scripts/enemies/
+  enemy_grid.gd` for projectile/mine/turret/fusion queries, event-driven mine
+  arming, per-blade Pulsar fusion design) while keeping origin/publish's
+  unique additions that auto-merged cleanly (ease-in, safe-spawn ported into
+  `EnemySpawner._enemy_spawn_pos`, the `Main.instance` grid API still used by
+  ~25 weapon/player call sites, CI workflow, docs). Both spatial-index systems
+  now coexist (redundant but correct) — left as-is rather than unifying.
+- Fixed a resulting GDScript type-inference compile error in
+  `EnemySpawner._enemy_spawn_pos` (needed explicit `Node2D`/`Vector2`
+  annotations since `main` is typed `Node`).
+- **Gotcha discovered**: headless smoke tests run via `/mnt/c/.../godot.exe`
+  from WSL bash don't see `NICESWARM_NET`/`NICESWARM_TEST` unless `WSLENV`
+  lists them (e.g. `WSLENV=NICESWARM_NET:NICESWARM_TEST NICESWARM_TEST=...
+  godot.exe ...`) — otherwise the run silently falls back to plain
+  menu-idle (still "banner only, zero errors", so it looks like a pass).
+  All smoke-test commands in this file/CLAUDE.md need this prefix on this
+  machine.
+- Re-verified with `WSLENV` fix: import, plain/all_weapons/zoo/bomber/merge
+  all print their `[test]` lines and exit clean; host+join pair prints
+  `start_game` on both sides + `first enemy puppet` on the client. Noted a
+  flaky (pre-existing, ~1/3 runs, present on master too) "ObjectDB instances
+  leaked at exit" warning on `all_weapons`/`bomber` — harmless `--quit-after`
+  timing artifact, not a regression.
+- Merge committed as `b29836a` on `sync-from-master`.

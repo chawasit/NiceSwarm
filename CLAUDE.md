@@ -10,6 +10,7 @@ checkboxes, append a session-log entry with what changed and what's next, and co
 - Build a distributable Windows .exe: **double-click `build.cmd`** (or run `./build.ps1`) → `build/NiceSwarm.exe` (single self-contained file, PCK embedded, with version metadata). One-time setup if it errors "no export template": `./install_export_templates.ps1`, then copy that folder into Scoop's self-contained path `scoop/apps/godot/current/editor_data/export_templates/<version>/` (Scoop Godot looks there, not %APPDATA%). Preset is `export_presets.cfg` ("Windows Desktop", x86_64, embed_pck).
 - **Version** lives in three places that must stay in sync when bumped: `VERSION` const in `main.gd` (shown on the menu), `config/version` in `project.godot`, and `application/file_version`+`product_version` in `export_presets.cfg` (the Windows exe metadata). Currently `0.9.0`.
 - Smoke test: `godot --headless --path . --quit-after 300` — must print nothing but the engine banner.
+- Unit tests: `godot --headless --path . --script res://tests/run_tests.gd` — zero-dependency headless suite over the config/data/formula/fusion layers; prints `[tests] N passed, M failed`, exits non-zero on failure. See [tests/README.md](tests/README.md).
 - Full-arsenal smoke test: set env `NICESWARM_TEST=all_weapons` first — grants all 13 weapons at start so every weapon's code path runs headless.
 - Co-op smoke test: run two headless instances — first with `NICESWARM_NET=host` (background, ~1500 frames), then `NICESWARM_NET=join` (~800 frames). Expect `[test] start_game peers=[1, ...]` and `[test] first enemy puppet` in the client log, zero errors in both. `NICESWARM_NET=solo` skips the menu for solo runs.
 - Bombardier/telegraph smoke test: `NICESWARM_TEST=bomber` spawns 4 bombers at start (works solo or as host) so the telegraph attack + the `STATE_TELEGRAPHS` sync channel run headless.
@@ -62,10 +63,51 @@ the dict array in `_apply_state`, and add a `_send_state`/`_apply_state` case.
 - `scripts/pickup.gd` — heart/bomb/magnet/chest; effects applied in `main._on_pickup_taken`.
 - `scripts/projectile.gd`, `scripts/xp_gem.gd`, `scripts/ring_fx.gd`, `scripts/float_text.gd`, `scripts/background.gd` — small, self-contained.
 
-Collision layers: 1 = player, 2 = enemies. Projectiles are Area2D with mask 2; gems/pickups use distance checks, no physics. Groups: `"enemies"`, `"gems"`.
+Collision layers: 1 = player, 2 = enemies (enemy `collision_layer = 2`). Projectiles are Area2D with mask 2; gems/pickups use distance checks, no physics. Groups: `"enemies"`, `"gems"`. **Enemies do NOT collide with each other** (`collision_mask = 0`) — 220 mutually-colliding bodies was an O(n²) cliff; they overlap freely, VS-style.
+
+**Finding enemies (perf — do NOT call `get_tree().get_nodes_in_group("enemies")` in per-frame code):** `Main` builds a shared enemy spatial index once per physics tick (`_rebuild_enemy_grid`, runs before any child processes). Query it instead: `Main.instance.enemies_in_radius(pos, r)` (O(local) uniform-grid query — keep your own precise `dist <= reach + e.radius` check), `Main.instance.nearest_enemy_to(pos, range)` (or `player.nearest_enemy(range)` which delegates to it), or `Main.instance.all_enemies()` (cached `Array[Node]`, no alloc) when you genuinely need every enemy. Helpers return `Array[Node]` so loop-var inference matches the old group scans. Rationale + remaining follow-ups in [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Conventions
 
 - GDScript 4 syntax, tabs, typed where cheap (`:=`).
 - Keep the build-in-code approach — don't introduce .tscn files for entities.
 - Tune balance numbers in `main.gd` (`_run_spawning`, `_spawn_enemy`, `_xp_needed`, stat pool in `_build_choice_pool`, `MAX_WEAPON_LEVEL`) and per-weapon scaling in each `weapon_*.gd` (damage uses `damage_mult`, spatial dims use `area_mult`, lifetimes use `duration_mult`).
+
+<!-- code-review-graph MCP tools -->
+## MCP Tools: code-review-graph
+
+**IMPORTANT: This project has a knowledge graph. ALWAYS use the
+code-review-graph MCP tools BEFORE using Grep/Glob/Read to explore
+the codebase.** The graph is faster, cheaper (fewer tokens), and gives
+you structural context (callers, dependents, test coverage) that file
+scanning cannot.
+
+### When to use graph tools FIRST
+
+- **Exploring code**: `semantic_search_nodes` or `query_graph` instead of Grep
+- **Understanding impact**: `get_impact_radius` instead of manually tracing imports
+- **Code review**: `detect_changes` + `get_review_context` instead of reading entire files
+- **Finding relationships**: `query_graph` with callers_of/callees_of/imports_of/tests_for
+- **Architecture questions**: `get_architecture_overview` + `list_communities`
+
+Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
+
+### Key Tools
+
+| Tool | Use when |
+| ------ | ---------- |
+| `detect_changes` | Reviewing code changes — gives risk-scored analysis |
+| `get_review_context` | Need source snippets for review — token-efficient |
+| `get_impact_radius` | Understanding blast radius of a change |
+| `get_affected_flows` | Finding which execution paths are impacted |
+| `query_graph` | Tracing callers, callees, imports, tests, dependencies |
+| `semantic_search_nodes` | Finding functions/classes by name or keyword |
+| `get_architecture_overview` | Understanding high-level codebase structure |
+| `refactor_tool` | Planning renames, finding dead code |
+
+### Workflow
+
+1. The graph auto-updates on file changes (via hooks).
+2. Use `detect_changes` for code review.
+3. Use `get_affected_flows` to understand impact.
+4. Use `query_graph` pattern="tests_for" to check coverage.
